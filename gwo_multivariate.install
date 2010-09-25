@@ -1,0 +1,34 @@
+<?php
+
+function gwo_multivariate_install() {
+  drupal_install_schema('gwo_multivariate');
+}
+
+function gwo_multivariate_uninstall() {
+  drupal_uninstall_schema('gwo_multivariate');
+}
+
+function gwo_multivariate_schema() {
+  $schema = array();
+
+  $schema['gwo_multivariate'] = array(
+    'description' => 'Stores the Google Website Optimizer Multivariate Settings',
+    'fields' => array(
+      'sid' => array(
+        'description' => 'Settings ID',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE
+      ),
+      'header_js'       => array('type' => 'text', 'not null' => TRUE, 'size' => 'medium', 'description' => 'The header JS content',),
+      'footer_js'       => array('type' => 'text', 'not null' => TRUE, 'size' => 'medium', 'description' => 'The footer JS content',),
+      'conversion_js'   => array('type' => 'text', 'not null' => TRUE, 'size' => 'medium', 'description' => 'The Conversaion Page JS content',),
+      'test_path'       => array('type' => 'text', 'not null' => TRUE, 'size' => 'small',  'description' => 'The test path',),
+      'conversion_path' => array('type' => 'text', 'not null' => TRUE, 'size' => 'small',  'description' => 'The conversion path',),
+      'variable_items'  => array('type' => 'text', 'not null' => TRUE, 'size' => 'medium', 'description' => 'Serialized array of targetable items',),
+    ),
+    'primary key' => array('sid'),
+  );
+
+  return $schema;
+}

@@ -1,0 +1,4 @@
+name = GWO MultiVariate
+description = Google Website Optimizer - Multivariate
+core = 6.x
+dependencies[] = oauth_google

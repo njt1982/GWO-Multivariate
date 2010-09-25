@@ -1,0 +1,163 @@
+<?php
+
+function gwo_multivariate_menu() {
+  $items = array();
+
+  $items['admin/settings/gwo-multivariate'] = array(
+    'title' => 'GWO MultiVariate',
+    'description' => 'Configure the Multivariate tests on this site',
+    'page callback' => 'gwo_multivariate_admin_overview',
+    'access arguments' => array('administer site'),
+    'file' => 'gwo_multivariate.admin.inc',
+  );
+
+  $items['admin/settings/gwo-multivariate/overview'] = array(
+    'title' => 'Overview',
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+    'weight' => -10,
+  );
+
+  $items['admin/settings/gwo-multivariate/add'] = array(
+    'title' => 'Add',
+    'type' => MENU_LOCAL_TASK,
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('gwo_multivariate_admin_experiment_form'),
+    'access arguments' => array('administer site'),
+    'file' => 'gwo_multivariate.admin.inc',
+  );
+
+  $items['admin/settings/gwo-multivariate/settings'] = array(
+    'title' => 'Settings',
+    'type' => MENU_LOCAL_TASK,
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('gwo_multivariate_admin_settings_form'),
+    'access arguments' => array('administer site'),
+    'file' => 'gwo_multivariate.admin.inc',
+  );
+
+  $items['admin/settings/gwo-multivariate/edit/%gwo_multivariate'] = array(
+    'title' => 'Edit',
+    'type' => MENU_CALLBACK,
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('gwo_multivariate_admin_experiment_form', 4),
+    'access arguments' => array('administer site'),
+    'file' => 'gwo_multivariate.admin.inc',
+  );
+
+  $items['admin/settings/gwo-multivariate/delete/%gwo_multivariate'] = array(
+    'title' => 'Delete',
+    'type' => MENU_CALLBACK,
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('gwo_multivariate_admin_delete_confirm', 4),
+    'access arguments' => array('administer site'),
+    'file' => 'gwo_multivariate.admin.inc',
+  );
+
+  return $items;
+}
+
+
+function gwo_multivariate_load($id, $flush = FALSE) {
+  static $cache = array();
+
+  if ($flush || !isset($cache[$id])) {
+    $o = db_fetch_object(db_query('SELECT * FROM {gwo_multivariate} WHERE sid = %d', $id));
+    if ($o) {
+      $o->variable_items = unserialize($o->variable_items);
+    }
+    $cache[$id] = $o ? $o : FALSE;
+  }
+
+  return $cache[$id];
+}
+
+function gwo_multivariate_get_settings_for_path($path, $type, $flush = FALSE) {
+  static $cache = array();
+
+  if ($flush || !isset($cache[$type][$path])) {
+    switch ($type) {
+      case 'test' :       $id = db_result(db_query('SELECT sid FROM {gwo_multivariate} WHERE test_path = "%s"', $path)); break;
+      case 'conversion' : $id = db_result(db_query('SELECT sid FROM {gwo_multivariate} WHERE conversion_path = "%s"', $path)); break;
+    }
+    $cache[$type][$path] = $id ? $id : FALSE;
+  }
+
+  if ($cache[$type][$path]) {
+    return gwo_multivariate_load($cache[$type][$path]);
+  }
+
+  return FALSE;
+}
+
+function gwo_multivariate_init() {
+  $test = gwo_multivariate_get_settings_for_path($_GET['q'], 'test');
+  if (isset($test->header_js)) {
+    drupal_set_html_head($test->header_js);
+  }
+}
+
+
+function gwo_multivariate_footer() {
+  $output = '';
+
+  $test = gwo_multivariate_get_settings_for_path($_GET['q'], 'test');
+  if (isset($test->footer_js)) {
+    $output .= $test->footer_js;
+  }
+
+  $test = gwo_multivariate_get_settings_for_path($_GET['q'], 'conversion');
+  if (isset($test->conversion_js)) {
+    $output .= (empty($output) ? '' : "\n\n") . $test->conversion_js;
+  }
+
+  return $output;
+}
+
+
+function gwo_multivariate_preprocess_block(&$vars) {
+  $test = gwo_multivariate_get_settings_for_path($_GET['q'], 'test');
+  if (!$test) return;
+
+  $key = $vars['block']->module .'-'. $vars['block']->delta;
+
+  if ($test->variable_items['block'][$key]) {
+    $vars['block']->content = '<script>utmx_section("block-'. $key .'")</script>'. $vars['block']->content .'</noscript>';
+  }
+}
+
+
+function gwo_multivariate_preprocess_content_field(&$vars) {
+  $test = gwo_multivariate_get_settings_for_path($_GET['q'], 'test');
+  if (!$test) return;
+  #dpm($test);
+  #dpm($vars);
+
+  $key = $vars['field_name'];
+
+  if ($test->variable_items['content'][$key]) {
+    $vars['items'][0]['view'] = '<script>utmx_section("content-'. $key .'")</script>'. $vars['items'][0]['view'] .'</noscript>';
+  }
+}
+
+
+function _gwo_multivariate_create_experiment($title) {
+  $account_id = variable_get('gwo_multivariate_account_id', '');
+
+  $data = <<<EOT
+<entry xmlns='http://www.w3.org/2005/Atom'
+       xmlns:gwo='http://schemas.google.com/analytics/websiteoptimizer/2009'
+       xmlns:app='http://www.w3.org/2007/app'
+       xmlns:gd='http://schemas.google.com/g/2005'>
+<title>{$title}</title>
+<gwo:analyticsAccountId>{$account_id}</gwo:analyticsAccountId>
+<gwo:experimentType>Multivariate</gwo:experimentType>
+</entry>
+EOT;
+  return $data;
+}
+
+
+function _gwo_multivariate_test($title) {
+  $res = oauth_google_request('https://www.google.com/analytics/feeds/websiteoptimizer/experiments', 'POST', _gwo_multivariate_create_experiment($title));
+  dpm($res);
+}

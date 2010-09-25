@@ -2,18 +2,28 @@
 
 
 function gwo_multivariate_admin_overview() {
-  $result = db_query('SELECT sid, test_path FROM {gwo_multivariate}');
+  $res = oauth_google_request('https://www.google.com/analytics/feeds/websiteoptimizer/experiments', 'GET');
+  if ($res->code != 200) {
+    drupal_set_message(t('Error getting experiment list from Google. %code: %msg', array('%code' => $res->code, '%msg' => $res->status_message)), 'error');
+    return '';
+  }
+
+  $obj = simplexml_load_string($res->data);
 
   $rows = array();
-  while($r = db_fetch_object($result)) {
+  //while($r = db_fetch_object($result)) {
+  foreach ($obj->entry as $experiment) {
+    preg_match('/\/([0-9]+)$/', $experiment->id, $id);
+    $id = $id[1];
+
     $rows[] = array(
-      $r->sid,
-      $r->test_path,
-      l(t('Edit'), 'admin/settings/gwo-multivariate/edit/'. $r->sid) .' | '. l(t('Delete'), 'admin/settings/gwo-multivariate/delete/'. $r->sid),
+      check_plain($id),
+      check_plain($experiment->title),
+      l(t('Edit'), 'admin/settings/gwo-multivariate/edit/'. $id) .' | '. l(t('Delete'), 'admin/settings/gwo-multivariate/delete/'. $id),
     );
   }
 
-  $headers = array(t('SID'), t('Test Path'), t('Ops'));
+  $headers = array(t('Experiment ID'), t('Title'), t('Ops'));
 
   return theme('table', $headers, $rows);
 }

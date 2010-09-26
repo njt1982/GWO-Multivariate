@@ -1,5 +1,7 @@
 <?php
 
+define(GOOGLE_API_URL, 'https://www.google.com/analytics/feeds/websiteoptimizer/experiments');
+
 function gwo_multivariate_menu() {
   $items = array();
 
@@ -57,19 +59,22 @@ function gwo_multivariate_menu() {
 }
 
 
+/**
+ * Internal load function for a Google Website Optimizer experiment via the API
+ */
 function gwo_multivariate_load($id, $flush = FALSE) {
   static $cache = array();
 
   if ($flush || !isset($cache[$id])) {
-    $o = db_fetch_object(db_query('SELECT * FROM {gwo_multivariate} WHERE sid = %d', $id));
-    if ($o) {
-      $o->variable_items = unserialize($o->variable_items);
-    }
-    $cache[$id] = $o ? $o : FALSE;
+    $res = oauth_google_request(array('url' => GOOGLE_API_URL ."/{$id}"));
+    $o = $res->code == 200 ? json_decode($res->data) : FALSE;
+    $cache[$id] = $o;
   }
 
   return $cache[$id];
 }
+
+
 
 function gwo_multivariate_get_settings_for_path($path, $type, $flush = FALSE) {
   static $cache = array();
@@ -129,8 +134,6 @@ function gwo_multivariate_preprocess_block(&$vars) {
 function gwo_multivariate_preprocess_content_field(&$vars) {
   $test = gwo_multivariate_get_settings_for_path($_GET['q'], 'test');
   if (!$test) return;
-  #dpm($test);
-  #dpm($vars);
 
   $key = $vars['field_name'];
 
@@ -140,24 +143,25 @@ function gwo_multivariate_preprocess_content_field(&$vars) {
 }
 
 
-function _gwo_multivariate_create_experiment($title) {
-  $account_id = variable_get('gwo_multivariate_account_id', '');
+function _gwo_multivariate_create_experiment($args) {
+  $args += array(
+    'account_id' => variable_get('gwo_multivariate_account_id', ''),
+  );
+  if (isset($args['etag'])) {
+    $args['etag'] = ' gd:etag="'. htmlspecialchars($args['etag']) .'"';
+  }
 
   $data = <<<EOT
 <entry xmlns='http://www.w3.org/2005/Atom'
        xmlns:gwo='http://schemas.google.com/analytics/websiteoptimizer/2009'
        xmlns:app='http://www.w3.org/2007/app'
-       xmlns:gd='http://schemas.google.com/g/2005'>
-<title>{$title}</title>
-<gwo:analyticsAccountId>{$account_id}</gwo:analyticsAccountId>
-<gwo:experimentType>Multivariate</gwo:experimentType>
+       xmlns:gd='http://schemas.google.com/g/2005'{$args['etag']}>
+  <title>{$args['title']}</title>
+  <gwo:analyticsAccountId>{$args['account_id']}</gwo:analyticsAccountId>
+  <gwo:experimentType>Multivariate</gwo:experimentType>
+  <link rel='gwo:testUrl' type='text/html' href='{$args['testUrl']}' />
+  <link rel='gwo:goalUrl' type='text/html' href='{$args['goalUrl']}' />
 </entry>
 EOT;
   return $data;
-}
-
-
-function _gwo_multivariate_test($title) {
-  $res = oauth_google_request('https://www.google.com/analytics/feeds/websiteoptimizer/experiments', 'POST', _gwo_multivariate_create_experiment($title));
-  dpm($res);
 }

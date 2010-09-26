@@ -1,83 +1,80 @@
 <?php
 
-
+/**
+ * Overview page
+ */
 function gwo_multivariate_admin_overview() {
-  $res = oauth_google_request('https://www.google.com/analytics/feeds/websiteoptimizer/experiments', 'GET');
+  // Pull an experiment summary from the API
+  $res = oauth_google_request();
+
+  // If the code isn't 200 (OK) then output an error
   if ($res->code != 200) {
     drupal_set_message(t('Error getting experiment list from Google. %code: %msg', array('%code' => $res->code, '%msg' => $res->status_message)), 'error');
     return '';
   }
 
-  $obj = simplexml_load_string($res->data);
+  // Convert the data from XML to an object, using SimpleXML
+  $obj = json_decode($res->data);
 
+  // Create a table summarising the experiments
   $rows = array();
-  //while($r = db_fetch_object($result)) {
-  foreach ($obj->entry as $experiment) {
-    preg_match('/\/([0-9]+)$/', $experiment->id, $id);
-    $id = $id[1];
+  foreach ($obj->feed->entry as $experiment) {
+    $id = $experiment->{'gwo$experimentId'}->{'$t'};
 
     $rows[] = array(
       check_plain($id),
-      check_plain($experiment->title),
+      check_plain($experiment->title->{'$t'}),
       l(t('Edit'), 'admin/settings/gwo-multivariate/edit/'. $id) .' | '. l(t('Delete'), 'admin/settings/gwo-multivariate/delete/'. $id),
     );
   }
 
   $headers = array(t('Experiment ID'), t('Title'), t('Ops'));
-
   return theme('table', $headers, $rows);
 }
 
 
-function gwo_multivariate_admin_experiment_form(&$form_state, $test = NULL) {
+function gwo_multivariate_admin_experiment_form(&$form_state, $experiment = NULL) {
   $form = array();
+  $front = url('<front>', array('absolute' => TRUE));
 
-  $form['sid'] = array(
-    '#type' => 'value',
-    '#value' => isset($test->sid) ? $test->sid : NULL,
-  );
+  $testUrl = $goalUrl = '';
 
-  $form['test_path'] = array(
+  if ($experiment) {
+    $form_state['experiment'] = $experiment;
+
+    foreach ($experiment->entry->link as $link) {
+      switch ($link->rel) {
+        case 'gwo:testUrl' : $testUrl = $link->href; break;
+        case 'gwo:goalUrl' : $goalUrl = $link->href; break;
+      }
+    }
+  }
+
+  $form['title'] = array(
     '#type' => 'textfield',
-    '#title' => t('Test Path'),
-    '#description' => t('Enter the test page source path (eg node/1) - do not use the alias'),
+    '#title' => t('Experiment Title'),
+    '#description' => t('The experiment title should be used to uniquely identify this experiment'),
     '#required' => TRUE,
-    '#default_value' => isset($test->test_path) ? $test->test_path : '',
-    '#field_prefix' => url('<front>', array('absolute' => TRUE)),
+    '#default_value' => isset($experiment) ? (string)$experiment->entry->title->{'$t'} : '',
   );
 
-  $form['header_js'] = array(
-    '#type' => 'textarea',
-    '#title' => t('Header JS'),
-    '#required' => TRUE,
-    '#default_value' => isset($test->header_js) ? $test->header_js : '',
-  );
-
-  $form['footer_js'] = array(
-    '#type' => 'textarea',
-    '#title' => t('Footer JS'),
-    '#required' => TRUE,
-    '#default_value' => isset($test->footer_js) ? $test->footer_js : '',
-  );
-
-
-  $form['conversion_path'] = array(
+  $form['testUrl'] = array(
     '#type' => 'textfield',
-    '#title' => t('Conversion Path'),
-    '#description' => t('Enter the conversion page source path (eg node/1) - do not use the alias'),
+    '#title' => t('Test Url'),
+    '#description' => t('Enter the test page url. It will probably start with @url', array('@url' => $front)),
     '#required' => TRUE,
-    '#default_value' => isset($test->conversion_path) ? $test->conversion_path : '',
-    '#field_prefix' => url('<front>', array('absolute' => TRUE)),
+    '#default_value' => $testUrl,
+  );
+
+  $form['goalUrl'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Conversion Url'),
+    '#description' => t('Enter the conversion page url. It will probably start with @urli. This may also be referred to as a Goal URL.', array('@url' => $front)),
+    '#required' => TRUE,
+    '#default_value' => $goalUrl,
   );
 
  
-  $form['conversion_js'] = array(
-    '#type' => 'textarea',
-    '#title' => t('Conversion JS Code'),
-    '#required' => TRUE,
-    '#default_value' => isset($test->conversion_js) ? $test->conversion_js : '',
-  );
-
   $form['gwo_multivariate_variables'] = array(
     '#type' => 'fieldset',
     '#title' => t('Variables'),
@@ -139,6 +136,7 @@ function content_gwo_variables() {
 
 
 function gwo_multivariate_admin_experiment_form_submit($form, &$form_state) {
+  /*
   foreach ($form_state['values']['gwo_multivariate_variables'] as $k => $v) {
     $form_state['values']['gwo_multivariate_variables'][$k] = array_filter($v);
   }
@@ -159,59 +157,71 @@ function gwo_multivariate_admin_experiment_form_submit($form, &$form_state) {
   else {
     drupal_write_record('gwo_multivariate', $row);
   }
+  */
 
+  $args = array(
+    'url' => GOOGLE_API_URL,
+    'method' => 'POST',
+    'request_type' => 'xml',
+  );
+  $exp = array(
+    'title' => $form_state['values']['title'],
+    'testUrl' => $form_state['values']['testUrl'],
+    'goalUrl' => $form_state['values']['goalUrl'],
+  );
+
+  if ($form_state['experiment']) {
+    $id = (int)$form_state['experiment']->entry->{'gwo$experimentId'}->{'$t'}; 
+    $args['url'] = GOOGLE_API_URL ."/{$id}";
+    $args['method'] = 'PUT';
+    $exp['etag'] = $args['etag'] = $form_state['experiment']->entry->{'gd$etag'};
+  }
+  $args['data'] = _gwo_multivariate_create_experiment($exp);
+
+  $res = oauth_google_request($args);
 
   $form_state['redirect'] = 'admin/settings/gwo-multivariate';
 }
 
 
-function gwo_multivariate_admin_delete_confirm(&$form_state, $test) {
+/**
+ * Delete confirm form to remove an experiment
+ */
+function gwo_multivariate_admin_delete_confirm(&$form_state, $experiment) {
   $form = array();
 
-  $form['#test'] = $test;
+  $form_state['experiment'] = $experiment;
   return confirm_form(
     $form,
-    t('Are you sure you want to delete this test?'),
+    t('Are you sure you want to delete the test "%name"?', array('%name' => $experiment->entry->title->{'$t'})),
     'admin/settings/gwo-multivariate',
-    t('Once deleted, this cannot be retreived'),
+    '<strong>'. t('Important: once deleted, this cannot be retreived') .'</strong>',
     t('Delete'),
     t('Cancel'),
     'gwo_multivariate_admin_delete_confirm'
   );
 }
 
+
+/**
+ * Submit handler for the delete experiment handler
+ */
 function gwo_multivariate_admin_delete_confirm_submit(&$form, &$form_state) {
-  db_query('DELETE FROM {gwo_multivariate} WHERE sid=%d', $form['#test']->sid);
+  // Convert the ID from a "url" into a number.
+  $id = $form_state['experiment']->entry->{'gwo$experimentId'}->{'$t'};
+
+  // Issue a delete request
+  $res = oauth_google_request(array('url' => GOOGLE_API_URL ."/{$id}", 'method' => 'DELETE', 'request_type' => 'xml'));
+
+  // If we get something other than a 200 code back, there was a problem
+  if ($res->code != 200) {
+    drupal_set_message(t('Error deleting experiment. %code : %msg', array('%code' => $res->code, '%msg' => $res->status_message)), 'error');
+  }
+
+  // Send the user back to the overview page
   $form_state['redirect'] = 'admin/settings/gwo-multivariate';
 }
 
-
-
-/*
-function gwo_multivariate_admin_oauth() {
-  $form = array();
-
-  $form['gwo_oauth_consumer_key'] = array(
-    '#type' => 'textfield',
-    '#title' => t('Consumer Key'),
-    '#description' => t('You can get a consumer key from !link', array('!link' => l(t('Google Manage Domains'), 'https://www.google.com/accounts/ManageDomains', array('absolute' => TRUE)))),
-    '#required' => TRUE,
-    '#default_value' => variable_get('gwo_oauth_consumer_key', ''),
-  );
-
-  $form['gwo_oauth_consumer_secret'] = array(
-    '#type' => 'textfield',
-    '#title' => t('Consumer Secret'),
-    '#description' => t('You can get a consumer secret from !link', array('!link' => l(t('Google Manage Domains'), 'https://www.google.com/accounts/ManageDomains', array('absolute' => TRUE)))),
-    '#required' => TRUE,
-    '#default_value' => variable_get('gwo_oauth_consumer_secret', ''),
-  );
-
-
-  //$form['submit'] = array('#type' => 'submit', '#value' => t('Save Settings'));
-  return system_settings_form($form);
-}
-*/
 
 
 function gwo_multivariate_admin_settings_form() {

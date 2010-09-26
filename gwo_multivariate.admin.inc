@@ -4,35 +4,39 @@
  * Overview page
  */
 function gwo_multivariate_admin_overview() {
-  // Pull an experiment summary from the API
-  $res = oauth_google_request();
-
-  // If the code isn't 200 (OK) then output an error
-  if ($res->code != 200) {
-    drupal_set_message(t('Error getting experiment list from Google. %code: %msg', array('%code' => $res->code, '%msg' => $res->status_message)), 'error');
-    return '';
-  }
-
-  // Convert the data from XML to an object, using SimpleXML
-  $obj = json_decode($res->data);
+  // Grab the experiments list
+  $experiments = gwo_multivariate_build_experiments();
 
   // Create a table summarising the experiments
   $rows = array();
-  foreach ($obj->feed->entry as $experiment) {
-    $id = $experiment->{'gwo$experimentId'}->{'$t'};
-
+  foreach ($experiments as $e) {
     $rows[] = array(
-      check_plain($id),
-      check_plain($experiment->title->{'$t'}),
-      l(t('Edit'), 'admin/settings/gwo-multivariate/edit/'. $id) .' | '. l(t('Delete'), 'admin/settings/gwo-multivariate/delete/'. $id),
+      $e->experimentId,
+      $e->title,
+      array('class' => 'status-'. drupal_strtolower($e->status), 'data' => $e->status), 
+      $e->numSections,
+      l(t('Edit'), 'admin/settings/gwo-multivariate/edit/'. $e->experimentId) .' | '. l(t('Delete'), 'admin/settings/gwo-multivariate/delete/'. $e->experimentId),
     );
   }
 
-  $headers = array(t('Experiment ID'), t('Title'), t('Ops'));
-  return theme('table', $headers, $rows);
+  $headers = array(t('Experiment ID'), t('Title'), t('Status'), t('Sections'), t('Ops'));
+  return drupal_get_form('gwo_multivariate_admin_refresh_form') . theme('table', $headers, $rows);
 }
 
 
+function gwo_multivariate_admin_refresh_form() {
+  $form = array();
+  $form['submit'] = array('#type' => 'submit', '#value' => t('Refresh'));
+  return $form;
+}
+
+function gwo_multivariate_admin_refresh_form_submit($form, &$form_state) {
+  cache_clear_all('gwo_multivariate', 'cache');
+}
+
+/**
+ * Create/Edit experiment form
+ */
 function gwo_multivariate_admin_experiment_form(&$form_state, $experiment = NULL) {
   $form = array();
   $front = url('<front>', array('absolute' => TRUE));
@@ -41,13 +45,6 @@ function gwo_multivariate_admin_experiment_form(&$form_state, $experiment = NULL
 
   if ($experiment) {
     $form_state['experiment'] = $experiment;
-
-    foreach ($experiment->entry->link as $link) {
-      switch ($link->rel) {
-        case 'gwo:testUrl' : $testUrl = $link->href; break;
-        case 'gwo:goalUrl' : $goalUrl = $link->href; break;
-      }
-    }
   }
 
   $form['title'] = array(
@@ -55,7 +52,7 @@ function gwo_multivariate_admin_experiment_form(&$form_state, $experiment = NULL
     '#title' => t('Experiment Title'),
     '#description' => t('The experiment title should be used to uniquely identify this experiment'),
     '#required' => TRUE,
-    '#default_value' => isset($experiment) ? (string)$experiment->entry->title->{'$t'} : '',
+    '#default_value' => isset($experiment) ? $experiment->title : '',
   );
 
   $form['testUrl'] = array(
@@ -63,7 +60,7 @@ function gwo_multivariate_admin_experiment_form(&$form_state, $experiment = NULL
     '#title' => t('Test Url'),
     '#description' => t('Enter the test page url. It will probably start with @url', array('@url' => $front)),
     '#required' => TRUE,
-    '#default_value' => $testUrl,
+    '#default_value' => isset($experiment) ? $experiment->link['gwo:testUrl'] : '',
   );
 
   $form['goalUrl'] = array(
@@ -71,34 +68,42 @@ function gwo_multivariate_admin_experiment_form(&$form_state, $experiment = NULL
     '#title' => t('Conversion Url'),
     '#description' => t('Enter the conversion page url. It will probably start with @urli. This may also be referred to as a Goal URL.', array('@url' => $front)),
     '#required' => TRUE,
-    '#default_value' => $goalUrl,
+    '#default_value' => isset($experiment) ? $experiment->link['gwo:goalUrl'] : '',
   );
 
- 
-  $form['gwo_multivariate_variables'] = array(
-    '#type' => 'fieldset',
-    '#title' => t('Variables'),
-    '#tree' => TRUE,
-  );
-
-  $variables = module_invoke_all('gwo_variables');
-  foreach ($variables as $module => $variable_settings) {
-    $form['gwo_multivariate_variables'][$module] = array(
+  // We can only add variables to existing experiments
+  // TODO: Find a work around for this...
+  if ($experiment) {
+    $form['variables'] = array(
       '#type' => 'fieldset',
-      '#title' => $variable_settings['name'],
-      '#collapsible' => TRUE,
-      '#collapsed' => TRUE,
+      '#title' => t('Variables'),
+      '#tree' => TRUE,
     );
-
-    $form['gwo_multivariate_variables'][$module][$module] = array(
-      '#type' => 'checkboxes',
-      '#title' => t('Enabled Blocks'),
-      '#options' => $variable_settings['options'],
-      '#default_value' => isset($test->variable_items[$module]) ? $test->variable_items[$module] : array(),
-      '#parents' => array('gwo_multivariate_variables', $module),
-    );
+    $section_titles = array();
+    foreach ($experiment->sections as $s) {
+      list($module) = explode('-', $s->title);
+      $section_titles[$module][$s->title] = $s->title;
+    }
+   
+    $variables = module_invoke_all('gwo_variables');
+    foreach ($variables as $module => $variable_settings) {
+      $form['variables'][$module] = array(
+        '#type' => 'fieldset',
+        '#title' => $variable_settings['name'],
+        '#collapsible' => TRUE,
+        '#collapsed' => TRUE,
+      );
+   
+      $form['variables'][$module][$module] = array(
+        '#type' => 'checkboxes',
+        '#title' => t('Enabled Blocks'),
+        '#options' => $variable_settings['options'],
+        '#default_value' => isset($section_titles[$module]) ? $section_titles[$module] : array(),
+        '#parents' => array('variables', $module),
+      );
+    }
   }
-  
+
   $form['submit'] = array(
     '#type' => 'submit',
     '#value' => t('Save'),
@@ -136,29 +141,6 @@ function content_gwo_variables() {
 
 
 function gwo_multivariate_admin_experiment_form_submit($form, &$form_state) {
-  /*
-  foreach ($form_state['values']['gwo_multivariate_variables'] as $k => $v) {
-    $form_state['values']['gwo_multivariate_variables'][$k] = array_filter($v);
-  }
-
-  $row = array(
-    'header_js'       => $form_state['values']['header_js'],
-    'footer_js'       => $form_state['values']['footer_js'],
-    'conversion_js'   => $form_state['values']['conversion_js'],
-    'test_path'       => $form_state['values']['test_path'],
-    'conversion_path' => $form_state['values']['conversion_path'],
-    'variable_items'  => serialize($form_state['values']['gwo_multivariate_variables']),
-  );
-
-  if ($form_state['values']['sid']) {
-    $row['sid'] = $form_state['values']['sid'];
-    drupal_write_record('gwo_multivariate', $row, 'sid');
-  }
-  else {
-    drupal_write_record('gwo_multivariate', $row);
-  }
-  */
-
   $args = array(
     'url' => GOOGLE_API_URL,
     'method' => 'POST',
@@ -171,15 +153,31 @@ function gwo_multivariate_admin_experiment_form_submit($form, &$form_state) {
   );
 
   if ($form_state['experiment']) {
-    $id = (int)$form_state['experiment']->entry->{'gwo$experimentId'}->{'$t'}; 
+    $id = (int)$form_state['experiment']->experimentId; 
     $args['url'] = GOOGLE_API_URL ."/{$id}";
     $args['method'] = 'PUT';
-    $exp['etag'] = $args['etag'] = $form_state['experiment']->entry->{'gd$etag'};
+    $exp['etag'] = $args['etag'] = $form_state['experiment']->etag;
   }
   $args['data'] = _gwo_multivariate_create_experiment($exp);
 
   $res = oauth_google_request($args);
 
+  if (isset($form_state['values']['variables'])) {
+    $form_state['values']['variables'] = array_map('array_filter', $form_state['values']['variables']);
+    foreach($form_state['values']['variables'] as $sections) {
+      foreach($sections as $section) {
+        $s_args = array(
+          'url' => GOOGLE_API_URL ."/{$id}/sections",
+          'method' => 'POST',
+          'request_type' => 'xml',
+          'data' => _gwo_multivariate_create_experiment_section(array('title' => $section)),
+        );
+        $r = oauth_google_request($s_args);
+      }
+    }
+  }
+
+  cache_clear_all('gwo_multivariate', 'cache');
   $form_state['redirect'] = 'admin/settings/gwo-multivariate';
 }
 
@@ -223,7 +221,9 @@ function gwo_multivariate_admin_delete_confirm_submit(&$form, &$form_state) {
 }
 
 
-
+/**
+ * General purpose settings form
+ */
 function gwo_multivariate_admin_settings_form() {
   $form = array();
 
@@ -236,4 +236,51 @@ function gwo_multivariate_admin_settings_form() {
   );
 
   return system_settings_form($form);
+}
+
+
+/**
+ * Create/Update Experiment wrapper function
+ */
+function _gwo_multivariate_create_experiment($args) {
+  $args += array(
+    'account_id' => variable_get('gwo_multivariate_account_id', ''),
+  );
+  if (isset($args['etag'])) {
+    $args['etag'] = ' gd:etag="'. htmlspecialchars($args['etag']) .'"';
+  }
+
+  $data = <<<EOT
+<entry xmlns='http://www.w3.org/2005/Atom'
+       xmlns:gwo='http://schemas.google.com/analytics/websiteoptimizer/2009'
+       xmlns:app='http://www.w3.org/2007/app'
+       xmlns:gd='http://schemas.google.com/g/2005'{$args['etag']}>
+  <title>{$args['title']}</title>
+  <gwo:analyticsAccountId>{$args['account_id']}</gwo:analyticsAccountId>
+  <gwo:experimentType>Multivariate</gwo:experimentType>
+  <link rel='gwo:testUrl' type='text/html' href='{$args['testUrl']}' />
+  <link rel='gwo:goalUrl' type='text/html' href='{$args['goalUrl']}' />
+</entry>
+EOT;
+  return $data;
+}
+
+
+/**
+ * Create/Update Experiment Section wrapper function
+ */
+function _gwo_multivariate_create_experiment_section($args) {
+  if (isset($args['etag'])) {
+    $args['etag'] = ' gd:etag="'. htmlspecialchars($args['etag']) .'"';
+  }
+
+  $data = <<<EOT
+<entry xmlns='http://www.w3.org/2005/Atom'
+       xmlns:gwo='http://schemas.google.com/analytics/websiteoptimizer/2009'
+       xmlns:app='http://www.w3.org/2007/app'
+       xmlns:gd='http://schemas.google.com/g/2005'{$args['etag']}>
+  <title>{$args['title']}</title>
+</entry>
+EOT;
+  return $data;
 }

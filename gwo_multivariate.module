@@ -1,7 +1,12 @@
 <?php
 
+// Reference point for the GWO Feed URL
 define(GOOGLE_API_URL, 'https://www.google.com/analytics/feeds/websiteoptimizer/experiments');
 
+
+/**
+ * Implementation of hook_menu().
+ */
 function gwo_multivariate_menu() {
   $items = array();
 
@@ -63,76 +68,78 @@ function gwo_multivariate_menu() {
  * Internal load function for a Google Website Optimizer experiment via the API
  */
 function gwo_multivariate_load($id, $flush = FALSE) {
-  static $cache = array();
-
-  if ($flush || !isset($cache[$id])) {
-    $res = oauth_google_request(array('url' => GOOGLE_API_URL ."/{$id}"));
-    $o = $res->code == 200 ? json_decode($res->data) : FALSE;
-    $cache[$id] = $o;
+  static $cache = NULL;
+  if (!$cache) {
+    $cache = gwo_multivariate_build_experiments();
   }
 
-  return $cache[$id];
-}
-
-
-
-function gwo_multivariate_get_settings_for_path($path, $type, $flush = FALSE) {
-  static $cache = array();
-
-  if ($flush || !isset($cache[$type][$path])) {
-    switch ($type) {
-      case 'test' :       $id = db_result(db_query('SELECT sid FROM {gwo_multivariate} WHERE test_path = "%s"', $path)); break;
-      case 'conversion' : $id = db_result(db_query('SELECT sid FROM {gwo_multivariate} WHERE conversion_path = "%s"', $path)); break;
-    }
-    $cache[$type][$path] = $id ? $id : FALSE;
-  }
-
-  if ($cache[$type][$path]) {
-    return gwo_multivariate_load($cache[$type][$path]);
+  if (isset($cache[$id])) {
+    return $cache[$id];
   }
 
   return FALSE;
 }
 
+
+/**
+ * Implementation of hook_init().
+ */
 function gwo_multivariate_init() {
-  $test = gwo_multivariate_get_settings_for_path($_GET['q'], 'test');
-  if (isset($test->header_js)) {
-    drupal_set_html_head($test->header_js);
+  // Get the experiments and for each one which matches this page, insert the control script into the header
+  $experiments = gwo_multivariate_build_experiments();
+  $url = url($_GET['q'], array('absolute' => TRUE));
+
+  foreach ($experiments as $e) {
+    if ($e->link['gwo:testUrl'] == $url) {
+      drupal_set_html_head($e->controlScript);
+    }
   }
 }
 
 
+/**
+ * Implementation of hook_footer().
+ */
 function gwo_multivariate_footer() {
-  $output = '';
+  $output = array();
 
-  $test = gwo_multivariate_get_settings_for_path($_GET['q'], 'test');
-  if (isset($test->footer_js)) {
-    $output .= $test->footer_js;
+  // Get the experiments and for each one which matches this page, insert the tracking or conversion script
+  $experiments = gwo_multivariate_build_experiments();
+  $url = url($_GET['q'], array('absolute' => TRUE));
+
+  foreach ($experiments as $e) {
+    if ($e->link['gwo:testUrl'] == $url) {
+      $output[] = $e->trackingScript;
+    }
+    if ($e->link['gwo:goalUrl'] == $url) {
+      $output[] = $e->conversionScript;
+    }
   }
 
-  $test = gwo_multivariate_get_settings_for_path($_GET['q'], 'conversion');
-  if (isset($test->conversion_js)) {
-    $output .= (empty($output) ? '' : "\n\n") . $test->conversion_js;
-  }
-
-  return $output;
+  return implode("\n\n", $output);
 }
 
 
 function gwo_multivariate_preprocess_block(&$vars) {
-  $test = gwo_multivariate_get_settings_for_path($_GET['q'], 'test');
-  if (!$test) return;
-
   $key = $vars['block']->module .'-'. $vars['block']->delta;
 
-  if ($test->variable_items['block'][$key]) {
-    $vars['block']->content = '<script>utmx_section("block-'. $key .'")</script>'. $vars['block']->content .'</noscript>';
+  $experiments = gwo_multivariate_build_experiments();
+  $url = url($_GET['q'], array('absolute' => TRUE));
+
+  foreach ($experiments as $e) {
+    if ($e->link['gwo:testUrl'] == $url) {
+      foreach($e->sections as $s) {
+        if ($s->title == $key) {
+          $vars['block']->content = '<script>utmx_section("block-'. $key .'")</script>'. $vars['block']->content .'</noscript>';
+        }
+      }
+    }
   }
 }
 
 
 function gwo_multivariate_preprocess_content_field(&$vars) {
-  $test = gwo_multivariate_get_settings_for_path($_GET['q'], 'test');
+  //$test = gwo_multivariate_get_settings_for_path($_GET['q'], 'test');
   if (!$test) return;
 
   $key = $vars['field_name'];
@@ -143,25 +150,127 @@ function gwo_multivariate_preprocess_content_field(&$vars) {
 }
 
 
-function _gwo_multivariate_create_experiment($args) {
-  $args += array(
-    'account_id' => variable_get('gwo_multivariate_account_id', ''),
-  );
-  if (isset($args['etag'])) {
-    $args['etag'] = ' gd:etag="'. htmlspecialchars($args['etag']) .'"';
+/**
+ *
+ */
+function gwo_multivariate_build_experiments($rebuild = FALSE) {
+  static $experiments = NULL;
+
+  if ($experiments) {
+    return $experiments;
   }
 
-  $data = <<<EOT
-<entry xmlns='http://www.w3.org/2005/Atom'
-       xmlns:gwo='http://schemas.google.com/analytics/websiteoptimizer/2009'
-       xmlns:app='http://www.w3.org/2007/app'
-       xmlns:gd='http://schemas.google.com/g/2005'{$args['etag']}>
-  <title>{$args['title']}</title>
-  <gwo:analyticsAccountId>{$args['account_id']}</gwo:analyticsAccountId>
-  <gwo:experimentType>Multivariate</gwo:experimentType>
-  <link rel='gwo:testUrl' type='text/html' href='{$args['testUrl']}' />
-  <link rel='gwo:goalUrl' type='text/html' href='{$args['goalUrl']}' />
-</entry>
-EOT;
-  return $data;
+  if (!$rebuild && ($cache = cache_get('gwo_multivariate'))) {
+    $experiments = $cache->data;
+  }
+  else {
+    $experiments = array();
+    // Get the configured google account ID. If none set, don't go any further
+    $account_id = variable_get('gwo_multivariate_account_id', 0);
+    if ($account_id == 0) {
+      return array();
+    }
+
+    // Pull an experiment summary from the API
+    $res = oauth_google_request();
+
+    // If the code isn't 200 (OK) then output an error
+    if ($res->code != 200) {
+      watchdog('gwo_multivariate', 'Error getting experiment list from Google. %code: %msg', array('%code' => $res->code, '%msg' => $res->status_message), WATCHDOG_ERROR);
+      return array();
+    }
+
+    // Convert the data from JSOM to a PHP object
+    $obj = json_decode($res->data);
+
+    // Loop over the entries
+    foreach ($obj->feed->entry as $experiment) {
+      // The request pulls ALL experiments the API can access - this line only shows ones for the specific account ID
+      if ($account_id != $experiment->{'gwo$analyticsAccountId'}->{'$t'}) continue;
+      
+      // Grab the ID from the summary
+      $id = (int)$experiment->{'gwo$experimentId'}->{'$t'};
+
+      // Get the detailed info about this experiment
+      $r = oauth_google_request(array('url' => GOOGLE_API_URL .'/'. $id));
+      $r = json_decode($r->data);
+
+      // Build an experiment object from the above
+      $e = gwo_multivariate_parse_entry($r->entry);
+
+      // If there are any sections, load them up
+      if ($e->numSections > 0) {
+        $e->sections = array();
+
+        // Get the detailed info about this experiment's sections
+        $r = oauth_google_request(array('url' => GOOGLE_API_URL ."/{$id}/sections"));
+        $r = json_decode($r->data);
+
+        // For each section, built it into the experiment object
+        foreach ($r->feed->entry as $section) {
+          $s = gwo_multivariate_parse_entry($section);
+
+          $e->sections[$s->sectionId] = $s;
+        }
+      }
+
+      // Store the experiment
+      $experiments[$id] = $e;
+    }
+    
+    // Cache these experiments
+    cache_set('gwo_multivariate', $experiments);
+  }
+
+  //dpm($experiments);
+  // Return them
+  return $experiments;
+}
+
+
+
+function gwo_multivariate_parse_entry($entry) {
+  $e = new stdClass();
+
+  foreach ($entry as $key => $value) {
+    // We need to handle different keys in different ways
+    // ignore xmlns ones - not sure why we need them in a JSON response
+    if (substr($key, 0, 5) == 'xmlns') {
+      continue;
+    }
+    // Store the etag - handy for editing
+    elseif ($key == 'gd$etag') {
+      $e->etag = $value;
+    }
+    // Anything beginning gwo or app should be processed as follows - mainly
+    elseif (substr($key, 0, 4) == 'gwo$' || substr($key, 0, 4) == 'app$') {
+      // strip the gwo and app nameSpace off for ease of use
+      $key = substr($key, 4);
+
+      // Script elements shouldn't be check_plain'd
+      if (substr($key, -6) == 'Script') {
+        $e->{$key} = $value->{'$t'};
+      }
+      else {
+        $e->{$key} = check_plain($value->{'$t'});
+      }
+    }
+    // Links should be looped over and have their "rel" elements stored
+    elseif ($key == 'link') {
+      $e->link = array();
+      foreach ($value as $l) {
+        $e->link[$l->rel] = $l->href;
+      }
+    }
+    // anything with a $t element should be check_plain'd
+    elseif (isset($value->{'$t'})) {
+      $e->{$key} = check_plain($value->{'$t'});
+    }
+    // Otherwise just check_plain the value
+    else {
+      $e->{$key} = check_plain($value);
+    }
+  }
+
+  return $e;
 }
